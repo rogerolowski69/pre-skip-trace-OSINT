@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from .base import DiscoveryResult, SearchProvider
 from .config import DiscoveryConfig
 from .providers import (
@@ -52,12 +54,13 @@ def discover(
         if not chosen:
             return [DiscoveryResult(query=query, provider=provider, error=f"Unknown provider: {provider}")]
         return [chosen.search(query, limit=limit)]
-    results: list[DiscoveryResult] = []
-    for name in DEFAULT_PROVIDER_ORDER:
-        p = providers[name]
-        if p.available():
-            results.append(p.search(query, limit=limit))
-    if not results:
+
+    available = [
+        providers[name]
+        for name in DEFAULT_PROVIDER_ORDER
+        if providers[name].available()
+    ]
+    if not available:
         return [
             DiscoveryResult(
                 query=query,
@@ -65,6 +68,16 @@ def discover(
                 error="No discovery providers available.",
             )
         ]
+
+    def run_provider(search_provider: SearchProvider) -> DiscoveryResult:
+        try:
+            return search_provider.search(query, limit=limit)
+        except Exception as exc:
+            return DiscoveryResult(query=query, provider=search_provider.name, error=str(exc))
+
+    with ThreadPoolExecutor(max_workers=len(available)) as executor:
+        futures = [executor.submit(run_provider, p) for p in available]
+        results = [future.result() for future in futures]
     return results
 
 

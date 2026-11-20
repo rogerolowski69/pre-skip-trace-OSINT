@@ -4,8 +4,10 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
+from service_osint.discovery.base import DiscoveryResult
 from service_osint.discovery.config import DiscoveryConfig
 from service_osint.discovery.providers.serper import SerperProvider
+from service_osint.discovery.router import discover
 
 
 def _test_config(**overrides: str | None) -> DiscoveryConfig:
@@ -44,3 +46,42 @@ def test_serper_provider_unavailable_without_key() -> None:
     assert not provider.available()
     result = provider.search("test")
     assert "SERPER_API_KEY" in (result.error or "")
+
+
+def test_discover_runs_available_providers_in_parallel_and_preserves_order() -> None:
+    class FakeProvider:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def available(self) -> bool:
+            return True
+
+        def search(self, query: str, *, limit: int) -> DiscoveryResult:
+            import time
+
+            time.sleep(0.05)
+            return DiscoveryResult(query=query, provider=self.name)
+
+    provider_names = (
+        "searxng",
+        "serper",
+        "tavily",
+        "exa",
+        "brave",
+        "linkup",
+        "firecrawl",
+        "duckduckgo",
+    )
+
+    with patch(
+        "service_osint.discovery.router.build_providers",
+        return_value=[FakeProvider(name) for name in provider_names],
+    ):
+        import time
+
+        started = time.perf_counter()
+        results = discover("test query", limit=2)
+        elapsed = time.perf_counter() - started
+
+    assert [result.provider for result in results] == list(provider_names)
+    assert elapsed < 0.25
